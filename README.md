@@ -19,11 +19,14 @@ airflow-journey/
 └── airflow_day2/
     └── dags/
         └── airflow_day2.py   # XCom demo: extract -> transform -> load
+└── airflow_day3/
+    └── dags/
+        └── airflow_day3.py   # Operators: TaskFlow decorators + classic + branching
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Day 2 currently ships only the DAG; run it inside a running Airflow stack
-> (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
+> Days 2 and 3 currently ship only the DAG; run them inside a running Airflow
+> stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
 
@@ -100,6 +103,49 @@ Key ideas:
   automatically — no explicit `>>` required.
 - Values are persisted in the `xcom` table of the metadata database. For this
   DAG: `extract` stores `10`, `transform` stores `20`, and `load` prints `20`.
+
+## Day 3 — Operators (the building blocks of a task)
+
+An *operator* is a template for a single unit of work; every task is an
+instance of one. There are two ways to write them, and Day 3 shows both in a
+single DAG:
+
+**TaskFlow decorators (modern, preferred for custom logic):**
+
+```python
+@task.python                 # == @task; runs a Python function (PythonOperator)
+def extract() -> int:
+    return 42
+
+@task.bash                   # runs a shell command (BashOperator)
+def show_date() -> str:
+    return "echo Today is: $(date)"
+
+@task.branch                 # picks a path; other branches are skipped
+def choose_path(number: int) -> str:
+    return "big_number" if number > 10 else "small_number"
+```
+
+**Classic operators (instantiate the class directly — used for provider
+operators such as SQL/S3/HTTP that have no `@task.*` form):**
+
+```python
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
+
+start = EmptyOperator(task_id="start")               # no-op anchor / join point
+greet = BashOperator(task_id="greet", bash_command="echo hi")
+```
+
+Key ideas:
+
+- `@task.python` and `@task` are the same thing; both build a `PythonOperator`.
+  Prefer the decorators for custom Python/Bash logic.
+- Use classic operators where no decorator exists (`EmptyOperator`, and all the
+  provider operators like SQL, S3, HTTP).
+- `@task.branch` returns the `task_id` to follow; the unchosen branches are
+  marked **skipped**. In this DAG `extract` returns `42`, so `big_number` runs
+  and `small_number` is skipped.
 
 ## Prerequisites
 
