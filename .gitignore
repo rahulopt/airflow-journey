@@ -1,0 +1,22 @@
+# Secrets / environment
+.env
+*/.env
+airflow_day1/config/airflow.cfg
+
+# Python virtual environment
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Airflow runtime
+airflow_day1/logs/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
