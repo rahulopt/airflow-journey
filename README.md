@@ -8,15 +8,22 @@ Currently on the latest stable **Airflow 3.3.2**.
 
 ```
 airflow-journey/
-└── airflow_day1/
-    ├── docker-compose.yaml   # Airflow 3.3.2 stack (CeleryExecutor + Redis + Postgres)
-    ├── .env.example          # Template for required environment variables
-    ├── dags/
-    │   └── airflow_day1.py    # A minimal 2-task TaskFlow DAG
-    ├── config/               # Airflow config (airflow.cfg is generated, not committed)
-    ├── plugins/              # Custom plugins (empty for now)
-    └── logs/                 # Task/scheduler logs (git-ignored)
+├── airflow_day1/
+│   ├── docker-compose.yaml   # Airflow 3.3.2 stack (CeleryExecutor + Redis + Postgres)
+│   ├── .env.example          # Template for required environment variables
+│   ├── dags/
+│   │   └── airflow_day1.py   # A minimal TaskFlow DAG
+│   ├── config/               # Airflow config (airflow.cfg is generated, not committed)
+│   ├── plugins/              # Custom plugins (empty for now)
+│   └── logs/                 # Task/scheduler logs (git-ignored)
+└── airflow_day2/
+    └── dags/
+        └── airflow_day2.py   # XCom demo: extract -> transform -> load
 ```
+
+> Each `airflow_dayN` directory is meant to be a self-contained environment.
+> Day 2 currently ships only the DAG; run it inside a running Airflow stack
+> (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
 
@@ -49,6 +56,50 @@ airflow_day1 = airflow_day1()
 - `schedule=None` — trigger manually only
 - `catchup=False` — no backfilling of past runs
 - Dependency: `task1 >> task2`
+
+## Day 2 — XCom (passing data between tasks)
+
+In Day 1 the tasks did not share data. Day 2 introduces **XCom**
+(Cross-Communication), the mechanism Airflow uses to move a task's output to
+the next task, forming a classic **extract → transform → load** pipeline:
+
+```python
+from airflow.sdk import dag, task
+from datetime import datetime
+
+
+@dag(dag_id="airflow_day2", start_date=datetime(2026, 1, 1),
+     schedule=None, catchup=False, tags=["day2", "xcom"])
+def airflow_day2():
+
+    @task
+    def extract() -> int:
+        return 10                     # returning a value pushes it to XCom
+
+    @task
+    def transform(number: int) -> int:
+        return number * 2             # receives extract()'s value from XCom
+
+    @task
+    def load(number: int) -> None:
+        print(f"final result stored: {number}")
+
+    # Passing outputs directly both moves data via XCom AND wires the
+    # dependency (extract -> transform -> load), so no `>>` is needed.
+    load(transform(extract()))
+
+
+airflow_day2 = airflow_day2()
+```
+
+Key ideas:
+
+- With the TaskFlow API, `return` a value to **push** it to XCom, and accept it
+  as a function argument to **pull** it in the next task.
+- Passing an output into the next call also **creates the dependency**
+  automatically — no explicit `>>` required.
+- Values are persisted in the `xcom` table of the metadata database. For this
+  DAG: `extract` stores `10`, `transform` stores `20`, and `load` prints `20`.
 
 ## Prerequisites
 
