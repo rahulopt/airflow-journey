@@ -22,10 +22,16 @@ airflow-journey/
 └── airflow_day3/
     └── dags/
         └── airflow_day3.py   # Operators: TaskFlow decorators + classic + branching
+└── airflow_day4/
+    └── dags/
+        └── airflow_day4.py   # Scheduling (@daily) + retries (flaky task recovers)
+└── airflow_day5/
+    └── dags/
+        └── airflow_day5.py   # Postgres: connection + SQL operators + hook
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2 and 3 currently ship only the DAG; run them inside a running Airflow
+> Days 2–5 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -146,6 +152,81 @@ Key ideas:
 - `@task.branch` returns the `task_id` to follow; the unchosen branches are
   marked **skipped**. In this DAG `extract` returns `42`, so `big_number` runs
   and `small_number` is skipped.
+
+## Day 4 — Scheduling + Retries
+
+Earlier DAGs used `schedule=None` (manual only). Day 4 makes a DAG run
+automatically and recover from transient failures:
+
+```python
+from datetime import datetime, timedelta
+
+default_args = {"retries": 2, "retry_delay": timedelta(seconds=15)}
+
+@dag(dag_id="airflow_day4", start_date=datetime(2026, 1, 1),
+     schedule="@daily", catchup=False, default_args=default_args)
+def airflow_day4():
+
+    @task(retries=2, retry_delay=timedelta(seconds=15))
+    def flaky_task(**context) -> str:
+        attempt = context["ti"].try_number
+        if attempt == 1:
+            raise ValueError("Simulated failure on first attempt")  # fails once
+        return "recovered"                                          # passes on retry
+```
+
+Key ideas:
+
+- **Scheduling:** `schedule="@daily"` (also `@hourly`/`@weekly`) or a cron
+  string like `"0 9 * * *"`. `catchup=False` runs from now on; `True` backfills
+  every missed interval since `start_date`.
+- **Retries:** `retries` + `retry_delay`, set per-task or once in
+  `default_args` for the whole DAG.
+- Verified live: `flaky_task` failed on attempt 1 and **succeeded on attempt 2**
+  (`try_number = 2`), proving the retry mechanism.
+
+## Day 5 — Postgres (Connections + SQL)
+
+Day 5 talks to a real PostgreSQL database — the two pieces every external
+integration needs: a **Connection** (`conn_id`, credentials stored by Airflow)
+and provider **operators/hooks**.
+
+```python
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+CONN_ID = "my_postgres"
+
+create_table = SQLExecuteQueryOperator(         # classic provider operator
+    task_id="create_table", conn_id=CONN_ID,
+    sql="CREATE TABLE IF NOT EXISTS day5_demo (id SERIAL PRIMARY KEY, name TEXT);")
+
+@task                                           # modern TaskFlow + a Hook
+def read_rows() -> int:
+    hook = PostgresHook(postgres_conn_id=CONN_ID)
+    rows = hook.get_records("SELECT id, name FROM day5_demo ORDER BY id;")
+    return len(rows)
+
+create_table >> insert_rows >> read_rows()
+```
+
+Set up the connection once (id `my_postgres`):
+
+```bash
+docker compose exec airflow-scheduler airflow connections add my_postgres \
+  --conn-type postgres --conn-host postgres --conn-login airflow \
+  --conn-password airflow --conn-schema airflow --conn-port 5432
+```
+
+Key ideas:
+
+- A **Connection** keeps credentials out of DAG code; tasks reference it by
+  `conn_id`. Manage connections in the UI (Admin → Connections) or via the CLI.
+- `SQLExecuteQueryOperator` runs SQL (there is no `@task.sql`, so it is used as
+  a classic operator). A `PostgresHook` opens the connection in Python to fetch
+  rows — the modern + classic mix in one pipeline.
+- Verified live: `create_table → insert_rows → read_rows` all succeeded and rows
+  (`alice`, `bob`) were written to and read back from Postgres.
 
 ## Prerequisites
 
