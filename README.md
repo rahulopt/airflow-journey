@@ -28,10 +28,13 @@ airflow-journey/
 └── airflow_day5/
     └── dags/
         └── airflow_day5.py   # Postgres: connection + SQL operators + hook
+└── airflow_day6/
+    └── dags/
+        └── airflow_day6.py   # Dynamic task mapping: get_files -> process.expand -> summarize
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–5 currently ship only the DAG; run them inside a running Airflow
+> Days 2–6 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -227,6 +230,40 @@ Key ideas:
   rows — the modern + classic mix in one pipeline.
 - Verified live: `create_table → insert_rows → read_rows` all succeeded and rows
   (`alice`, `bob`) were written to and read back from Postgres.
+
+## Day 6 — Dynamic Task Mapping
+
+Earlier DAGs had a fixed set of tasks. Day 6 creates tasks **at runtime**:
+`.expand()` runs the same task once per item in a list — the map/reduce pattern.
+
+```python
+@task
+def get_files() -> list[str]:
+    return ["users.csv", "orders.csv", "products.csv"]   # length only known at runtime
+
+@task
+def process(file: str) -> int:
+    return len(file) * 10
+
+@task
+def summarize(counts: list[int]) -> None:
+    print(f"processed {len(counts)} files, total rows = {sum(counts)}")
+
+file_list = get_files()
+counts = process.expand(file=file_list)   # one mapped instance per file
+summarize(counts)                         # reduce: receives all results
+```
+
+Key ideas:
+
+- `.expand()` fans a single task out into **N mapped instances**, one per list
+  element, run in parallel. 3 files → 3 instances; 100 files → 100 instances.
+- The count is **not hard-coded** — it comes from the upstream task's output at
+  runtime.
+- A downstream task that accepts the mapped output (`counts: list[int]`)
+  **reduces** all instances back into one.
+- Verified live: `process` expanded to `map_index` 0/1/2 (returning `90`, `100`,
+  `120`); `summarize` reduced them to a total of `310`.
 
 ## Prerequisites
 
