@@ -34,10 +34,13 @@ airflow-journey/
 └── airflow_day7/
     └── dags/
         └── airflow_day7.py   # Sensors: @task.sensor + FileSensor waiting for a file
+└── airflow_day8/
+    └── dags/
+        └── airflow_day8.py   # TaskGroups: extract / transform / load groups
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–7 currently ship only the DAG; run them inside a running Airflow
+> Days 2–8 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -316,6 +319,50 @@ Set up the filesystem connection once (id `fs_default`):
 docker compose exec airflow-scheduler airflow connections add fs_default \
   --conn-type fs --conn-extra '{"path":"/"}'
 ```
+
+## Day 8 — TaskGroups (organizing large DAGs)
+
+As DAGs grow, the graph gets crowded. A **TaskGroup** bundles related tasks
+into a single collapsible unit in the Airflow UI. It is purely organizational —
+it does not change how tasks run, it just makes big pipelines easier to read.
+
+```python
+from airflow.sdk import dag, task, task_group
+from datetime import datetime
+
+@dag(dag_id="airflow_day8", start_date=datetime(2026, 1, 1),
+     schedule=None, catchup=False, tags=["day8", "taskgroups"])
+def airflow_day8():
+
+    @task_group(group_id="extract")
+    def extract_group():
+        @task
+        def pull_orders() -> int: return 100
+        @task
+        def pull_customers() -> int: return 50
+        return {"orders": pull_orders(), "customers": pull_customers()}
+
+    @task_group(group_id="transform")
+    def transform_group(orders: int, customers: int):
+        @task
+        def clean(orders: int, customers: int) -> int:
+            return orders + customers
+        return clean(orders, customers)
+
+    extracted = extract_group()
+    transform_group(extracted["orders"], extracted["customers"])
+```
+
+Key ideas:
+
+- Create a group with the `@task_group(group_id="...")` decorator; tasks
+  defined inside become members of that group.
+- In the UI, group members appear nested under the group name
+  (`extract.pull_orders`, `transform.clean`, `load.write_result`).
+- TaskGroups are **cosmetic/organizational** — execution logic is unchanged,
+  and data still flows between groups via normal XCom.
+- Verified live: `extract` produced 100 + 50, `transform` combined them to
+  `150`, and `load` wrote the final total of `150`.
 
 ## Prerequisites
 
