@@ -31,10 +31,13 @@ airflow-journey/
 └── airflow_day6/
     └── dags/
         └── airflow_day6.py   # Dynamic task mapping: get_files -> process.expand -> summarize
+└── airflow_day7/
+    └── dags/
+        └── airflow_day7.py   # Sensors: @task.sensor + FileSensor waiting for a file
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–6 currently ship only the DAG; run them inside a running Airflow
+> Days 2–7 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -264,6 +267,55 @@ Key ideas:
   **reduces** all instances back into one.
 - Verified live: `process` expanded to `map_index` 0/1/2 (returning `90`, `100`,
   `120`); `summarize` reduced them to a total of `310`.
+
+## Day 7 — Sensors (waiting for a condition)
+
+Earlier DAGs ran immediately. Day 7 introduces **sensors** — special tasks
+that repeatedly check ("poke") a condition and only succeed once it is met.
+This is how a pipeline waits for a file to land, a partition to appear, or an
+external system to be ready before it proceeds.
+
+```python
+from airflow.sdk import dag, task
+from airflow.sdk.bases.sensor import PokeReturnValue
+from airflow.providers.standard.sensors.filesystem import FileSensor
+from datetime import datetime
+
+WATCHED_FILE = "/tmp/day7_ready.flag"
+
+@dag(dag_id="airflow_day7", start_date=datetime(2026, 1, 1),
+     schedule=None, catchup=False, tags=["day7", "sensors"])
+def airflow_day7():
+
+    @task.sensor(poke_interval=5, timeout=60, mode="reschedule")
+    def wait_for_flag() -> PokeReturnValue:          # custom sensor
+        import os
+        return PokeReturnValue(is_done=os.path.exists(WATCHED_FILE))
+
+    wait_with_filesensor = FileSensor(               # ready-made sensor
+        task_id="wait_with_filesensor", filepath=WATCHED_FILE,
+        fs_conn_id="fs_default", poke_interval=5, timeout=60, mode="reschedule")
+```
+
+Key ideas:
+
+- `@task.sensor` wraps your own Python check; return
+  `PokeReturnValue(is_done=True)` when the condition is satisfied. Classic
+  provider sensors (like `FileSensor`) are ready-made for common systems.
+- **`poke_interval`** is how often to re-check; **`timeout`** caps the total
+  wait so a sensor never blocks forever.
+- **`mode="poke"`** holds a worker slot the whole time (fine for short waits);
+  **`mode="reschedule"`** frees the slot between checks (efficient for long
+  waits — prefer it in production).
+- Verified live: an upstream task created the flag file, both sensors detected
+  it (`file exists = True`), and the downstream task then ran.
+
+Set up the filesystem connection once (id `fs_default`):
+
+```bash
+docker compose exec airflow-scheduler airflow connections add fs_default \
+  --conn-type fs --conn-extra '{"path":"/"}'
+```
 
 ## Prerequisites
 
