@@ -37,10 +37,17 @@ airflow-journey/
 └── airflow_day8/
     └── dags/
         └── airflow_day8.py   # TaskGroups: extract / transform / load groups
+└── airflow_day9/
+    └── dags/
+        ├── airflow_day9_producer.py   # Assets: producer updates an Asset (outlets)
+        └── airflow_day9_consumer.py   # Assets: consumer scheduled ON the Asset
+└── airflow_day10/
+    └── dags/
+        └── airflow_day10.py   # Trigger rules (one_failed / all_done) + callbacks
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–8 currently ship only the DAG; run them inside a running Airflow
+> Days 2–10 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -363,6 +370,73 @@ Key ideas:
   and data still flows between groups via normal XCom.
 - Verified live: `extract` produced 100 + 50, `transform` combined them to
   `150`, and `load` wrote the final total of `150`.
+
+## Day 9 — Datasets / Assets (data-driven scheduling)
+
+Earlier DAGs ran on a time schedule. Day 9 makes a DAG run **when data is
+ready** instead of on the clock. A **producer** task declares it updates an
+**Asset**; a **consumer** DAG is scheduled on that Asset and triggers
+automatically whenever the Asset is updated.
+
+```python
+from airflow.sdk import dag, task, Asset
+
+sales_asset = Asset("s3://demo/sales_data")
+
+# PRODUCER: outlets marks the asset updated when the task succeeds
+@dag(dag_id="airflow_day9_producer", schedule="@daily", ...)
+def producer():
+    @task(outlets=[sales_asset])
+    def refresh_sales_data() -> None: ...
+
+# CONSUMER: scheduled ON the asset, not on time
+@dag(dag_id="airflow_day9_consumer", schedule=[sales_asset], ...)
+def consumer():
+    @task
+    def build_report() -> None: ...
+```
+
+Key ideas:
+
+- `outlets=[asset]` on a task marks the Asset updated when the task succeeds.
+- `schedule=[asset]` makes a DAG **data-driven** — it runs when the Asset
+  updates, with no cron and no manual trigger.
+- Verified live: triggering only the producer caused the consumer to run
+  automatically with `run_type = asset_triggered`.
+
+## Day 10 — Trigger Rules + Callbacks
+
+By default a task runs only if **all** upstream tasks succeed. Day 10 shows how
+to change that with **trigger rules**, and how to react to outcomes with
+**callbacks**.
+
+```python
+@task(on_success_callback=notify_success)
+def step_ok() -> str: return "ok"
+
+@task(on_failure_callback=notify_failure, retries=0)
+def step_fails() -> str:
+    raise ValueError("Simulated failure")
+
+@task(trigger_rule="one_failed")   # runs only if an upstream FAILED
+def cleanup() -> None: ...
+
+@task(trigger_rule="all_done")     # runs no matter what happened
+def finalize() -> None: ...
+
+[step_ok(), step_fails()] >> cleanup()
+[step_ok(), step_fails()] >> finalize()
+```
+
+Key ideas:
+
+- **Trigger rules** control when a task runs: `all_success` (default),
+  `one_failed`, `all_failed`, `one_success`, `none_failed`, `all_done`,
+  `always`.
+- **Callbacks** (`on_success_callback` / `on_failure_callback`) run custom
+  logic on a task's outcome — useful for alerts.
+- Verified live: `step_fails` failed, yet `cleanup` (`one_failed`) and
+  `finalize` (`all_done`) both still ran, proving the resilience pattern.
 
 ## Prerequisites
 
