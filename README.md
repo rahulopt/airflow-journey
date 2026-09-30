@@ -44,10 +44,13 @@ airflow-journey/
 └── airflow_day10/
     └── dags/
         └── airflow_day10.py   # Trigger rules (one_failed / all_done) + callbacks
+└── airflow_day11/
+    └── dags/
+        └── airflow_day11.py   # Mini project: sensor -> ingest group -> map -> Postgres -> finalize
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–10 currently ship only the DAG; run them inside a running Airflow
+> Days 2–11 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -437,6 +440,71 @@ Key ideas:
   logic on a task's outcome — useful for alerts.
 - Verified live: `step_fails` failed, yet `cleanup` (`one_failed`) and
   `finalize` (`all_done`) both still ran, proving the resilience pattern.
+
+## Day 11 — Mini Project (capstone)
+
+Day 11 combines the previous concepts into one end-to-end pipeline:
+
+```
+wait_for_input (sensor)  ->  ingest.get_files (TaskGroup)
+    ->  process.expand (dynamic mapping)  ->  load_total (Postgres)  ->  finalize (all_done)
+```
+
+```python
+@dag(dag_id="airflow_day11", start_date=datetime(2026, 1, 1),
+     schedule=None, catchup=False,
+     default_args={"retries": 1, "retry_delay": timedelta(seconds=10)},
+     tags=["day11", "project"])
+def airflow_day11():
+
+    @task.sensor(poke_interval=5, timeout=60, mode="reschedule")
+    def wait_for_input() -> PokeReturnValue:
+        return PokeReturnValue(is_done=os.path.exists(FLAG_FILE))
+
+    @task_group(group_id="ingest")
+    def ingest_group():
+        @task
+        def get_files() -> list[str]:
+            return ["orders_us.csv", "orders_uk.csv", "orders_in.csv"]
+        return get_files()
+
+    @task
+    def process(file: str) -> int:
+        return len(file) * 10
+
+    @task
+    def load_total(counts: list[int]) -> None:
+        total = sum(counts)
+        hook = PostgresHook(postgres_conn_id=CONN_ID)
+        hook.run("CREATE TABLE IF NOT EXISTS day11_summary "
+                 "(id SERIAL PRIMARY KEY, total INT, created_at TIMESTAMPTZ DEFAULT now());")
+        hook.run(f"INSERT INTO day11_summary (total) VALUES ({total});")
+
+    @task(trigger_rule="all_done")
+    def finalize() -> None:
+        print("pipeline complete")
+
+    flag = wait_for_input()
+    files = ingest_group()
+    flag >> files
+    counts = process.expand(file=files)
+    load_total(counts) >> finalize()
+```
+
+Concepts combined: **sensors** (Day 7), **TaskGroups** (Day 8), **dynamic
+mapping** (Day 6), **Postgres load** (Day 5), **retries** (Day 4), and
+**trigger rules** (Day 10).
+
+Run it: create the flag file the sensor waits for, then trigger the DAG:
+
+```bash
+docker compose exec airflow-scheduler touch /tmp/day11_orders.flag
+docker compose exec airflow-scheduler airflow dags trigger airflow_day11
+```
+
+Verified live: the sensor detected the file, `process` mapped to `map_index`
+0/1/2, and `load_total` wrote a total of `390`
+(`len("orders_xx.csv") * 10 * 3`) into the `day11_summary` table in Postgres.
 
 ## Prerequisites
 
