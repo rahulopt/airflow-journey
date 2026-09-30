@@ -47,10 +47,13 @@ airflow-journey/
 └── airflow_day11/
     └── dags/
         └── airflow_day11.py   # Mini project: sensor -> ingest group -> map -> Postgres -> finalize
+└── airflow_day12/
+    └── dags/
+        └── airflow_day12.py   # Production config: Variables (JSON) + Connections (no hardcoding)
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–11 currently ship only the DAG; run them inside a running Airflow
+> Days 2–12 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -505,6 +508,59 @@ docker compose exec airflow-scheduler airflow dags trigger airflow_day11
 Verified live: the sensor detected the file, `process` mapped to `map_index`
 0/1/2, and `load_total` wrote a total of `390`
 (`len("orders_xx.csv") * 10 * 3`) into the `day11_summary` table in Postgres.
+
+## Day 12 — Variables & Connections (production config)
+
+Production DAGs must not hardcode paths, file lists, thresholds, or
+credentials. Day 12 moves configuration **out of the code**: structured config
+lives in an Airflow **Variable** (JSON), and database access uses a
+**Connection** referenced by `conn_id`.
+
+```python
+from airflow.sdk import dag, task, Variable
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+CONN_ID = "my_postgres"
+
+@dag(dag_id="airflow_day12", schedule=None, catchup=False, tags=["day12", "config"])
+def airflow_day12():
+
+    @task
+    def load_config() -> dict:
+        # structured config as JSON, editable in the UI without code changes
+        return Variable.get("day12_config", deserialize_json=True)
+
+    @task
+    def show_files(cfg: dict) -> int:
+        return len(cfg["source_files"])          # uses config, not hardcoded
+
+    @task
+    def check_db(cfg: dict) -> None:
+        hook = PostgresHook(postgres_conn_id=CONN_ID)   # creds via conn_id
+        db = hook.get_first("SELECT current_database();")[0]
+        print(f"env={cfg['env']} db={db}")
+
+    cfg = load_config()
+    show_files(cfg)
+    check_db(cfg)
+```
+
+Set the Variable once (JSON value):
+
+```bash
+docker compose exec airflow-scheduler airflow variables set day12_config \
+  '{"source_files": ["sales_jan.csv", "sales_feb.csv"], "min_rows": 5, "env": "dev"}'
+```
+
+Key ideas:
+
+- **Variables** hold config; `Variable.get(key, deserialize_json=True)` returns
+  a dict. Change config in the UI/CLI without touching code.
+- **Connections** hold credentials/endpoints; tasks reference them by `conn_id`
+  through a Hook — secrets never live in the DAG.
+- Verified live: `load_config` read the JSON Variable (`env=dev`,
+  `source_files=[…]`), and `check_db` connected via the `my_postgres`
+  connection with no credentials in code.
 
 ## Prerequisites
 
