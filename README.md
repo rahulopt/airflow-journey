@@ -53,10 +53,13 @@ airflow-journey/
 └── airflow_day13/
     └── dags/
         └── airflow_day13.py   # Data quality: validate (null/negative) -> stop pipeline if bad
+└── airflow_day14/
+    └── dags/
+        └── airflow_day14.py   # Idempotency: UPSERT (ON CONFLICT) so re-runs don't duplicate
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–13 currently ship only the DAG; run them inside a running Airflow
+> Days 2–14 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -617,6 +620,52 @@ Key ideas:
   reported `Loaded 5 valid rows`.
 - Note (CeleryExecutor): tasks run on the **worker**, so input files must be on
   shared storage (S3, a mounted volume) rather than one container's local `/tmp`.
+
+## Day 14 — Idempotency + UPSERT (safe to re-run)
+
+A production pipeline must be **idempotent**: running it multiple times
+produces the same result, without duplicates. In Day 11, each run inserted a
+new row (re-running created duplicate totals). Day 14 fixes that with an
+**UPSERT** — `INSERT ... ON CONFLICT ... DO UPDATE` — so there is exactly one
+row per key, always holding the latest value.
+
+```python
+from airflow.sdk import dag, task
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from datetime import datetime
+
+CONN_ID = "my_postgres"
+
+@dag(dag_id="airflow_day14", schedule=None, catchup=False, tags=["day14", "idempotency"])
+def airflow_day14():
+
+    @task
+    def create_table() -> None:
+        hook = PostgresHook(postgres_conn_id=CONN_ID)
+        hook.run("""CREATE TABLE IF NOT EXISTS day14_regional_totals (
+            region TEXT PRIMARY KEY, total INT, updated_at TIMESTAMPTZ DEFAULT now());""")
+
+    @task
+    def upsert_totals() -> None:
+        data = [("US", 300), ("UK", 550), ("IN", 175)]
+        hook = PostgresHook(postgres_conn_id=CONN_ID)
+        for region, total in data:
+            hook.run(
+                "INSERT INTO day14_regional_totals (region, total) VALUES (%s, %s) "
+                "ON CONFLICT (region) DO UPDATE SET total = EXCLUDED.total, updated_at = now();",
+                parameters=(region, total))
+
+    create_table() >> upsert_totals()
+```
+
+Key ideas:
+
+- The conflict target (`region`) must be a **PRIMARY KEY / UNIQUE** column for
+  `ON CONFLICT` to work.
+- `EXCLUDED.total` refers to the value that the failed INSERT tried to add;
+  `DO UPDATE` applies it to the existing row.
+- Because of the UPSERT, re-running the DAG keeps the row count constant (one
+  row per region) instead of inserting duplicates — the pipeline is idempotent.
 
 ## Prerequisites
 
