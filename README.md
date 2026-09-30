@@ -50,10 +50,13 @@ airflow-journey/
 └── airflow_day12/
     └── dags/
         └── airflow_day12.py   # Production config: Variables (JSON) + Connections (no hardcoding)
+└── airflow_day13/
+    └── dags/
+        └── airflow_day13.py   # Data quality: validate (null/negative) -> stop pipeline if bad
 ```
 
 > Each `airflow_dayN` directory is meant to be a self-contained environment.
-> Days 2–12 currently ship only the DAG; run them inside a running Airflow
+> Days 2–13 currently ship only the DAG; run them inside a running Airflow
 > stack (e.g. reuse Day 1's `docker-compose.yaml`, or add a dedicated one).
 
 ## Day 1
@@ -561,6 +564,59 @@ Key ideas:
 - Verified live: `load_config` read the JSON Variable (`env=dev`,
   `source_files=[…]`), and `check_db` connected via the `my_postgres`
   connection with no credentials in code.
+
+## Day 13 — Data Quality (validate before you load)
+
+Never load bad data into your warehouse. Day 13 adds a **validation gate**:
+read the data, check it, and **stop the pipeline** (raise an error) if it fails
+the checks — so bad data never reaches downstream systems.
+
+```python
+from airflow.sdk import dag, task
+import csv
+
+DATA_FILE = "/tmp/day13_sales.csv"
+
+@dag(dag_id="airflow_day13", schedule=None, catchup=False, tags=["day13", "data-quality"])
+def airflow_day13():
+
+    @task
+    def read_data() -> list[dict]:
+        with open(DATA_FILE) as f:
+            return list(csv.DictReader(f))
+
+    @task
+    def validate(rows: list[dict]) -> list[dict]:
+        errors = []
+        for row in rows:
+            amount = row.get("amount")
+            if amount is None or amount.strip() == "":
+                errors.append(f"Row {row['id']} has empty amount")
+            elif float(amount) < 0:
+                errors.append(f"Row {row['id']} has negative amount: {amount}")
+        if errors:
+            raise ValueError("Data validation failed: " + "; ".join(errors))
+        return rows
+
+    @task
+    def load(rows: list[dict]) -> None:
+        print(f"Loaded {len(rows)} valid rows")
+
+    load(validate(read_data()))
+```
+
+Key ideas:
+
+- The `validate` task is the **data-quality gate**: if it raises, downstream
+  tasks become `upstream_failed` and the bad data is never loaded.
+- A **designed failure** (validation stopping bad data) is different from a
+  **bug failure** — here, `validate` failing on bad input is the intended,
+  correct behavior.
+- Verified live: with bad rows (null + negative amount) `validate` **failed**
+  and `load` was skipped; with clean data all tasks **succeeded** and `load`
+  reported `Loaded 5 valid rows`.
+- Note (CeleryExecutor): tasks run on the **worker**, so input files must be on
+  shared storage (S3, a mounted volume) rather than one container's local `/tmp`.
 
 ## Prerequisites
 
